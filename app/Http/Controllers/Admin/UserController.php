@@ -5,13 +5,10 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Auth;
 
 class UserController extends Controller
 {
-    /**
-     * Display a listing of users.
-     */
     public function index()
     {
         $users = User::latest()->paginate(10);
@@ -19,63 +16,43 @@ class UserController extends Controller
         return view('admin.users.index', compact('users'));
     }
 
-    /**
-     * Show the form for creating a new user.
-     */
-    public function create()
+    public function trashed()
     {
-        return view('admin.users.create');
+        $users = User::onlyTrashed()->latest()->paginate(10);
+
+        return view('admin.users.trashed', compact('users'));
     }
 
-    /**
-     * Store a newly created user.
-     */
-    public function store(Request $request)
-    {
-
-        User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-            'role' => $request->role,
-        ]);
-
-        return redirect()->route('users.index');
-    }
-
-    /**
-     * Show the form for editing a user.
-     */
-    public function edit(User $user)
-    {
-        return view('admin.users.edit', compact('user'));
-    }
-
-    /**
-     * Update the specified user.
-     */
-    public function update(Request $request, User $user)
-    {
-        
-
-        $user->update([
-            'name' => $request->name,
-            'email' => $request->email,
-            'role' => $request->role,
-        ]);
-
-        return redirect()->route('users.index')
-            ->with('success', 'User updated successfully');
-    }
-
-    /**
-     * Remove the specified user.
-     */
     public function destroy(User $user)
     {
         $user->delete();
 
-        return redirect()->route('users.index')
-            ->with('success', 'User deleted successfully');
+        return redirect()->route('admin.users.index')
+            ->with('success', 'User banned successfully');
+    }
+
+    public function restore($id)
+    {
+        $user = User::withTrashed()->findOrFail($id);
+        $user->restore();
+
+        return redirect()->route('admin.users.trashed')
+            ->with('success', 'User restored successfully');
+    }
+
+    public function forceDestroy($id)
+    {
+        $user = User::withTrashed()->findOrFail($id);
+        $user->forceDelete();
+
+        return redirect()->route('admin.users.trashed')
+            ->with('success', 'User permanently deleted');
+    }
+
+    public function myColocations()
+    {
+        $colocations = Auth::user()->colocations;
+
+        return view('colocations.my', compact('colocations'));
     }
 }
