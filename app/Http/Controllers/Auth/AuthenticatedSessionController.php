@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\InvitationController;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Models\Invitation;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -14,6 +16,9 @@ class AuthenticatedSessionController extends Controller
     /**
      * Display the login view.
      */
+            /** @var User $user */
+
+
     public function create(): View
     {
         return view('auth.login');
@@ -28,10 +33,19 @@ class AuthenticatedSessionController extends Controller
 
         $request->session()->regenerate();
 
-        if(auth::user()->role ==='admin') {
-            return redirect('/admin/dashboard');
+        if ($invitationId = session('invitation_id')) {
+            $invitation = Invitation::find($invitationId);
+            if ($invitation) {
+                app(InvitationController::class)->process($request, $invitation);
+                return redirect()->intended(route('colocations.show', $invitation->colocation));
+            }
         }
-        return redirect('/home');
+
+        if (auth::user()->role === 'admin') {
+            return redirect()->route('admin.dashboard');
+        }
+
+        return redirect()->route('user.home');
 
         // return redirect()->intended(route('dashboard', absolute: false));
     }

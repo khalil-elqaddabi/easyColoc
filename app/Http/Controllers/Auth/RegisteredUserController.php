@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\InvitationController;
+use App\Models\Invitation;
 use App\Models\User;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\RedirectResponse;
@@ -45,6 +47,16 @@ class RegisteredUserController extends Controller
         ]);
 
         Auth::login($user);
+
+        if ($invitationId = session('invitation_id')) {
+            $invitation = Invitation::find($invitationId);
+            if ($invitation && $invitation->email === $request->email) {
+                app(InvitationController::class)->process($request, $invitation);
+                return redirect()->intended(route('colocations.show', $invitation->colocation));
+            }
+        }
+
+
 
         if ($user->role === 'admin') {
             return redirect()->route('admin.dashboard');
