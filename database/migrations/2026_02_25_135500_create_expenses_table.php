@@ -11,17 +11,16 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('colocations', function (Blueprint $table) {
+        Schema::create('expenses', function (Blueprint $table) {
             $table->id();
-
-            $table->string('name');
-
-            $table->enum('status', ['active', 'canceled'])
-                ->default('active');
-
-            $table->timestamp('canceled_at')->nullable();
-
+            $table->string('title', 255);
+            $table->decimal('amount');
+            $table->date('start_at');
+            $table->foreignId('payer_id')->constrained('users');
+            $table->foreignId('category_id')->constrained()->cascadeOnDelete();
             $table->timestamps();
+
+            $table->index('start_at');
         });
     }
 
@@ -30,6 +29,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('colocations');
+        Schema::dropIfExists('expenses');
     }
 };
