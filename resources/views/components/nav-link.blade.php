@@ -7,5 +7,5 @@ $classes = ($active ?? false)
 @endphp
 
 <h1 {{ $attributes->merge(['class' => $classes]) }}>
-    welcome {{ Auth::user()->name }}
+    welcome {{ auth()->user()->name }}
 </h1>
