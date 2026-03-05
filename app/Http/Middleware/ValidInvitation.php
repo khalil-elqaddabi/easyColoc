@@ -5,9 +5,8 @@ namespace App\Http\Middleware;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
-use Illuminate\Support\Facades\Auth;
 
-class AdminMiddleware
+class ValidInvitation
 {
     /**
      * Handle an incoming request.
@@ -16,9 +15,13 @@ class AdminMiddleware
      */
     public function handle(Request $request, Closure $next): Response
     {
-        if(auth()->user()->role === 'admin'){
-            return $next($request);
+        $invitation = $request->route('invitation');
+
+        if (!$invitation->isPending()) {
+            abort(404, 'Invitation expired or already used.');
         }
-        abort(403);
+
+        $request->merge(['invitation' => $invitation]);
+        return $next($request);
     }
 }

@@ -4,10 +4,10 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\Auth;
+use Symfony\Component\HttpFoundation\Response;
 
-class AdminMiddleware
+class NoActiveColocation
 {
     /**
      * Handle an incoming request.
@@ -16,9 +16,15 @@ class AdminMiddleware
      */
     public function handle(Request $request, Closure $next): Response
     {
-        if(auth()->user()->role === 'admin'){
-            return $next($request);
+        /** @var User $user */
+        $user = auth()->user();
+
+        if ($user?->activeColocations()->exists()) {
+            return back()->withErrors([
+                'email' => 'You already belong to an active colocation.'
+            ]);
         }
-        abort(403);
+
+        return $next($request);
     }
 }
