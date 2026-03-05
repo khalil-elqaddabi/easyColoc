@@ -1,23 +1,190 @@
 <?php
+
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Colocation extends Model
 {
-    protected $fillable = ['name', 'status', 'canceled_at'];
+    use HasFactory;
 
-    /**
-     * Get the users in this colocation.
-     */
-    public function users(): BelongsToMany
+    protected $fillable = ['name', 'owner_id', 'status'];
+
+    protected function casts(): array
     {
-        return $this->belongsToMany(
-            User::class,
-            'colocation_user',
+        return [
+            'status' => 'string'
+        ];
+    }
+
+    public function members()
+    {
+        return $this->belongsToMany(User::class, 'colocation_members')->withPivot(['role', 'left_at'])->withTimestamps()->orderBy('colocation_members.role', 'desc');
+    }
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class, 'owner_id');
+    }
+
+    public function invitations()
+    {
+        return $this->hasMany(Invitation::class);
+    }
+
+
+    public function categories()
+    {
+        return $this->hasMany(Category::class);
+    }
+
+    public function expenses()
+    {
+        return $this->hasManyThrough(
+            Expense::class,
+            Category::class,
             'colocation_id',
-            'user_id'
+            'category_id',
         );
+    }
+
+    public function payments()
+    {
+        return $this->hasManyThrough(
+            Payment::class,
+            Expense::class,
+            'payer_id',
+        );
+    }
+
+    // ======
+
+    public function activeMembers()
+    {
+        return $this->members()->wherePivot('left_at', null);
+    }
+
+    public function pendingPayments()
+    {
+        return $this->hasManyThrough(Payment::class, Expense::class)
+            ->whereNull('paid_at');
+    }
+
+    protected static function booted()
+    {
+        static::deleting(function (Colocation $coloc) {
+            $coloc->categories()->delete();
+        });
+    }
+
+    public function computeBalances(): array
+    {
+        $members = $this->activeMembers()->with('expenses')->get();
+
+        if ($members->isEmpty()) {
+            return [];
+        }
+
+        $total = $this->expenses()->sum('amount');
+        $share = $total / $members->count();
+
+        $balances = [];
+
+        foreach ($members as $member) {
+            $paid = $member->expenses()->whereHas('category', fn($q) => $q->where('colocation_id', $this->id))->sum('amount');
+
+            $balances[$member->id] = $paid - $share;
+        }
+
+        return $balances;
+    }
+
+    public function generatePayments(): void
+    {
+        $balances = $this->computeBalances();
+
+        $debtors = [];
+        $creditors = [];
+
+        foreach ($balances as $userId => $balance) {
+            if ($balance < 0) {
+                $debtors[$userId] = -$balance;
+            } elseif ($balance > 0) {
+                $creditors[$userId] = $balance;
+            }
+        }
+
+        $this->payments()->whereNull('paid_at')->delete();
+
+        foreach ($debtors as $debtorId => $debt) {
+            foreach ($creditors as $creditorId => $credit) {
+                if ($debt <= 0) {
+                    break;
+                }
+                if ($credit <= 0 || $debtorId === $creditorId) {
+                    continue;
+                }
+
+                $amount = min($debt, $credit);
+
+                Payment::create([
+                    'colocation_id' => $this->id,
+                    'payer_id' => $debtorId,
+                    'receiver_id' => $creditorId,
+                    'amount' => $amount,
+                ]);
+
+                $debt -= $amount;
+                $credit -= $amount;
+
+                $creditors[$creditorId] = $credit;
+                $debtors[$debtorId] = $debt;
+            }
+        }
+    }
+
+    public function generateExpensePayments(Expense $expense): void
+    {
+        $expense->payments()->delete();
+
+        $activeMembers = $this->activeMembers()->pluck('id');
+        $share = $expense->amount / $activeMembers->count();
+
+        $payerPaid = $expense->payer_id;
+
+        foreach ($activeMembers as $memberId) {
+            if ($memberId !== $payerPaid) {
+                Payment::create([
+                    'expense_id' => $expense->id,
+                    'payer_id' => $memberId,
+                    'receiver_id' => $payerPaid,
+                    'amount' => $share,
+                ]);
+            }
+        }
+    }
+
+    public function computeExpenseDebtMatrix(Expense $expense): array
+    {
+        $payments = $expense->payments()
+            ->with(['payer', 'receiver'])
+            ->whereNull('paid_at')
+            ->get();
+
+        $debtMatrix = [];
+        foreach ($payments as $payment) {
+            $debtMatrix[$payment->payer->name][$payment->receiver->name] = $payment->amount;
+        }
+        return $debtMatrix;
+    }
+
+    public function generatePaymentsForAllExpenses(): void
+    {
+        $this->expenses()->chunk(50, function ($expenses) {
+            foreach ($expenses as $expense) {
+                $this->generateExpensePayments($expense);
+            }
+        });
     }
 }
