@@ -2,109 +2,223 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\InviteToColocationRequest;
+use App\Http\Requests\StoreColocationRequest;
+use App\Http\Requests\UpdateColocationRequest;
+use App\Mail\InvitationEmail;
 use App\Models\Colocation;
+use App\Models\Invitation;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+
+use function Symfony\Component\Clock\now;
 
 class ColocationController extends Controller
 {
     /**
-     * Display a listing of user's colocations
+     * Display a listing of the resource.
      */
-public function index()
-{
+    /** @var User $user */
+
+    public function index(Request $request)
+    {
+        $user = auth::user();
+
+        $colocations = $user->colocations()
+            ->with(['owner:id,name', 'categories:id,name'])
+            ->latest()
+            ->get();
+
+        // Simple active members count (no complex pivot query)
+        $colocations->each(function ($colocation) {
+            $colocation->active_members = $colocation->members()
+                ->wherePivot('left_at', null)
+                ->count();
+        });
+
+        if ($request->routeIs('user.home')) {
+            return view('user.home', compact('colocations'));
+        }
+
+        return view('colocations.index', compact('colocations'));
+    }
+
+
+
     /**
-     * @var User $user
-     */
-    $user = Auth::user();
-
-    $colocations = $user->colocations()->latest()->paginate(10);
-
-    return view('colocations.index', compact('colocations'));
-}
-
-
-    /**
-     * Show form to create new colocation
+     * Show the form for creating a new resource.
      */
     public function create()
     {
+        Gate::authorize('can_create_colocation', Colocation::class);
+
         return view('colocations.create');
     }
 
     /**
-     * Store new colocation
+     * Store a newly created resource in storage.
      */
-    public function store(Request $request)
+    public function store(StoreColocationRequest $request)
     {
-        $request->validate([
-            'name' => 'required|string|max:255',
-        ]);
+        $user = auth::user();
 
-        $colocation = Colocation::create([
-            'name' => $request->name,
-            'status' => 'active',
-        ]);
+        if ($user->activeColocations()->exists()) {
+            return redirect()->route('colocations.index')->with('error', 'You already belong to an active colocation.');
+        }
 
-        $colocation->users()->attach(Auth::id());
+        $validated = $request->validated();
 
-        return redirect()->route('colocations.index')
-            ->with('success', 'Colocation created successfully.');
+        $colocation = new Colocation($validated);
+        $colocation->owner_id = $user->id;
+        $colocation->save();
+
+        $colocation->members()->attach($user->id, ['role' => 'owner']);
+
+        return redirect()->route('colocations.show', $colocation)->with('status', 'Colocation created and you are now the owner.');
     }
 
     /**
-     * Display specific colocation
+     * Display the specified resource.
      */
-    public function show(string $id)
+    public function show(Colocation $colocation)
     {
-        $colocation = Colocation::with('users')->findOrFail($id);
+        $user = auth::user();
+        Gate::authorize('can_view_colocation', $colocation);
+
+        $colocation->load([
+            'members' => fn($q) => $q->withPivot('role', 'left_at')->wherePivot('left_at', null),
+            'owner',
+            'categories',
+            'expenses' => fn($q) => $q->with(['payer', 'category', 'payments' => fn($p) => $p->whereNull('paid_at')])
+        ]);
 
         return view('colocations.show', compact('colocation'));
     }
 
+
     /**
-     * Show edit form
+     * Show the form for editing the specified resource.
      */
-    public function edit(string $id)
+    public function edit(Colocation $colocation)
     {
-        $colocation = Colocation::findOrFail($id);
+        Gate::authorize('can_update_colocation', $colocation);
 
         return view('colocations.edit', compact('colocation'));
     }
 
     /**
-     * Update colocation
+     * Update the specified resource in storage.
      */
-    public function update(Request $request, string $id)
+    public function update(UpdateColocationRequest $request, Colocation $colocation)
     {
-        $request->validate([
-            'name' => 'required|string|max:255',
-        ]);
+        Gate::authorize('can_update_colocation', $colocation);
 
-        $colocation = Colocation::findOrFail($id);
+        $validated = $request->validated();
 
-        $colocation->update([
-            'name' => $request->name,
-        ]);
+        $colocation->fill($validated);
+        $colocation->save();
 
-        return redirect()->route('colocations.index')
-            ->with('success', 'Colocation updated successfully.');
+        return redirect()->route('colocations.show', $colocation)->with('status', 'Colocation updated.');
     }
 
     /**
-     * Cancel colocation (بدل delete)
+     * Remove the specified resource from storage.
      */
-    public function destroy(string $id)
+    public function destroy(Colocation $colocation)
     {
-        $colocation = Colocation::findOrFail($id);
+        Gate::authorize('can_delete_colocation', $colocation);
 
-        $colocation->update([
-            'status' => 'canceled',
-            'canceled_at' => now(),
-        ]);
+        if ($colocation->status === 'active') {
+            return redirect()->route('colocations.show', $colocation)->withErrors(['status' => 'You must cancel the colocation first.']);
+        }
 
-        return redirect()->route('colocations.index')
-            ->with('success', 'Colocation canceled successfully.');
+        if ($colocation->activeMembers()->count() > 1) {
+            return redirect()->route('colocations.show', $colocation)->withErrors(['members' => 'You must remove all members before cancelling then deleting.']);
+        }
+
+        $name = $colocation->name;
+        $colocation->delete();
+
+        return redirect()->route('colocations.index')->with('status', "Colocation \"{$name}\" deleted.");
+    }
+
+    public function cancel(Colocation $colocation)
+    {
+        Gate::authorize('can_cancel_colocation', $colocation);
+
+        if ($colocation->status === 'cancelled') {
+            return redirect()->route('colocations.show', $colocation)->withErrors(['status' => 'This colocation is already cancelled.']);
+        }
+
+        if ($colocation->activeMembers()->count() > 1) {
+            return redirect()->route('colocations.show', $colocation)->withErrors(['members' => 'You must remove all members before cancelling.']);
+        }
+
+        $colocation->status = 'cancelled';
+        $colocation->members()->updateExistingPivot($colocation->owner_id, ['left_at' => now()]);
+        $colocation->save();
+
+        return redirect()->route('colocations.index')->with('status', 'Colocation cancelled.');
+    }
+
+    public function removeMember(Colocation $colocation, User $member)
+    {
+        Gate::authorize('can_remove_member', [$colocation]);
+
+        $balances = $colocation->computeBalances();
+        $memberBalance = $balances[$member->id] ?? 0;
+        $hasDebt = $memberBalance < 0;
+
+        if ($hasDebt) {
+            $member->decrement('reputation');
+        } else {
+            $member->increment('reputation');
+        }
+
+        $colocation->members()->updateExistingPivot($member->id, ['left_at' => now()]);
+
+        /** @var User $user */
+        $user = auth()->user();
+
+        if ($hasDebt && $user->id === $colocation->owner_id) {
+            $user->decrement('reputation');
+        }
+
+        $member->save();
+        $user->save();
+
+        // ✅ Regenerate ALL expense payments (with proper expense_id)
+        $colocation->generatePaymentsForAllExpenses();
+
+        return redirect()->route('colocations.show', $colocation)
+            ->with('status', "Member {$member->name} removed.");
+    }
+
+    public function quit(Request $request, Colocation $colocation)
+    {
+        Gate::authorize('can_quit_colocation', $colocation);
+
+        /** @var User $user */
+        $user = $request->user();
+
+        $balances = $colocation->computeBalances();
+        $balance  = $balances[$user->id] ?? 0;
+
+        if ($balance < 0) {
+            $user->decrement('reputation');
+        } else {
+            $user->increment('reputation');
+        }
+
+        $colocation->members()->updateExistingPivot($user->id, ['left_at' => now()]);
+        $user->save();
+
+        $colocation->generatePayments();
+
+        return redirect()->route('colocations.index')->with('status', 'You have quit the colocation.');
     }
 }

@@ -3,56 +3,60 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\ProfileUpdateRequest;
 use App\Models\User;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 
 class UserController extends Controller
 {
     public function index()
     {
-        $users = User::latest()->paginate(10);
+        $users = User::with('colocations')->orderBy('banned_at', 'asc')->orderBy('created_at', 'desc')->paginate(20);
 
         return view('admin.users.index', compact('users'));
     }
 
-    public function trashed()
+    public function show(User $user)
     {
-        $users = User::onlyTrashed()->latest()->paginate(10);
-
-        return view('admin.users.trashed', compact('users'));
+        return view('admin.users.show', compact('user'));
     }
 
-    public function destroy(User $user)
+    public function ban(User $user)
     {
-        $user->delete();
+        if ($user->is_admin) {
+            return back()->with('error', 'Cannot ban an admin.');
+        }
 
-        return redirect()->route('admin.users.index')
-            ->with('success', 'User banned successfully');
+        $user->update(['banned_at' => now()]);
+
+        return back()->with('status', 'User banned.');
     }
 
-    public function restore($id)
+    public function unban(User $user)
     {
-        $user = User::withTrashed()->findOrFail($id);
-        $user->restore();
+        $user->update(['banned_at' => null]);
 
-        return redirect()->route('admin.users.trashed')
-            ->with('success', 'User restored successfully');
+        return back()->with('status', 'User unbanned.');
     }
 
-    public function forceDestroy($id)
+    public function edit(User $user)
     {
-        $user = User::withTrashed()->findOrFail($id);
-        $user->forceDelete();
-
-        return redirect()->route('admin.users.trashed')
-            ->with('success', 'User permanently deleted');
+        return view('profile.edit', compact('user'));
     }
 
-    public function myColocations()
+    public function update(ProfileUpdateRequest $request, User $user)
     {
-        $colocations = Auth::user()->colocations;
+        $validated = $request->validated();
 
-        return view('colocations.my', compact('colocations'));
+        $user->name  = $validated['name'];
+        $user->email = $validated['email'];
+
+        if ($request->filled('password')) {
+            $user->password = bcrypt($validated['password']);
+        }
+
+        $user->save();
+
+        return back()->with('status', 'Profile updated.');
     }
 }
